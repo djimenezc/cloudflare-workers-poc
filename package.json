@@ -1,0 +1,19 @@
+{
+	"name": "vega-containers-poc",
+	"description": "Cloudflare Workers Containers proof-of-concept",
+	"private": true,
+	"dependencies": {
+		"@cloudflare/containers": "0.0.30",
+		"hono": "4.11.1"
+	},
+	"devDependencies": {
+		"typescript": "5.9.3",
+		"wrangler": "4.95.0"
+	},
+	"scripts": {
+		"cf-typegen": "wrangler types",
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev"
+	}
+}
