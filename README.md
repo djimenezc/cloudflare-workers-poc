@@ -1,121 +1,108 @@
-# Cloudflare Workers Containers PoC
+# Vega Ephemeral Dev Environment
 
-Proof-of-concept for deploying container apps on [Cloudflare Workers Containers](https://developers.cloudflare.com/containers/).
+> Personal development environments at the edge.
 
-A **Cloudflare Worker** (TypeScript/Hono) acts as the entry point and routes requests to **container instances** backed by a Go HTTP server. Containers run on-demand as Durable Objects, start automatically on first request, and sleep after inactivity.
+A simplified Gitpod-style dev environment running on **Cloudflare Workers Containers**. Each workspace is a Durable-Object-backed container that spins up on demand, sleeps when idle, and gives you a browser IDE — file tree, Monaco editor, shell terminal, and a live preview with hot reload.
 
 ## Architecture
 
 ```
-Internet → Cloudflare Worker (src/index.ts)
-                 ↓
-          MyContainer (Durable Object)
-                 ↓
-          Go HTTP server (container_src/main.go)
-          running in a linux/amd64 container
+Browser SPA                Worker (Hono)                 Workspace (per-id DO)
+┌───────────────┐         ┌────────────────┐            ┌────────────────────┐
+│ File tree     │         │ /ws/:id        │            │ Go agent           │
+│ Monaco editor │ ◄─────► │ proxies HTTP   │ ◄────────► │  GET /api/tree     │
+│ xterm.js term │         │ proxies WS     │            │  GET/PUT /api/file │
+│ Preview iframe│         │ serves IDE     │            │  WS  /api/terminal │
+└───────────────┘         └────────────────┘            │  WS  /api/events   │
+                                                       │  GET /preview/*    │
+                                                       └────────────────────┘
+                                                       Alpine + bash + pty
 ```
+
+- **Browser SPA**: single HTML doc served by the Worker. Monaco + xterm via CDN, vanilla JS.
+- **Worker**: Hono router. Spawns/wakes the container Durable Object keyed by workspace id and proxies HTTP + WebSockets through.
+- **Workspace container**: a Go agent inside an Alpine image. Exposes a file API, a pty-backed terminal over WebSocket, an fsnotify event stream, and a static `/preview/*` route.
+
+## Features
+
+| Feature           | How it works                                                                   |
+|-------------------|--------------------------------------------------------------------------------|
+| Spawn workspace   | Visit `/ws/<id>` — `WORKSPACE.idFromName("workspace-<id>")` resolves a unique DO. |
+| Browser IDE       | Monaco editor loaded from CDN; `Ctrl+S` / `Cmd+S` saves to the container.      |
+| File tree         | `GET /api/tree` returns the recursive tree under `/workspace`.                 |
+| Terminal          | `WS /api/terminal` opens a pty-backed `bash -l` (via `creack/pty`).            |
+| Hot reload        | `fsnotify` events stream over `WS /api/events`; the browser reloads the preview iframe when `public/*` changes. |
+| Ephemeral storage | Workspace lives in the container; reset on cold start. Persistence = v2.       |
 
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 18+
-- [Docker](https://www.docker.com/) (running locally for `make dev`)
-- Cloudflare account — account ID is already set in `wrangler.jsonc`
-- Authenticated wrangler session: `npx wrangler login`
+- [Docker](https://www.docker.com/) running locally (for `make dev`)
+- Cloudflare account — account ID set in `wrangler.jsonc`
+- `npx wrangler login`
 
 ## Quick start
 
 ```bash
-# Install dependencies
 make install
-
-# Authenticate with Cloudflare (one-time)
+make tidy        # refresh Go module deps
 npx wrangler login
-
-# Run locally (requires Docker)
-make dev
-
-# Deploy to Cloudflare
-make deploy
+make dev         # opens http://localhost:8787 -> redirects to a fresh /ws/<id>
 ```
 
-## Makefile targets
+Open `http://localhost:8787` in a browser. The Worker redirects you to `/ws/<random-id>` and the IDE boots. The seed workspace lives at `container_src/seed/` and contains `public/index.html` — edit it in Monaco, hit save, watch the preview reload.
 
-| Target        | Description                                                |
-|---------------|------------------------------------------------------------|
-| `make install` | Install npm dependencies                                  |
-| `make dev`    | Run locally with wrangler dev (requires Docker)            |
-| `make deploy` | Build image, push to Cloudflare Registry, deploy worker   |
-| `make logs`   | Tail live worker logs                                      |
-| `make list`   | List running container instances                           |
-| `make images` | List container images in Cloudflare Registry               |
-| `make clean`  | Remove `node_modules` and `.wrangler` cache                |
+## Demo script
 
-## Project structure
+1. Visit the root URL — confirm you land on `/ws/<id>`.
+2. Click `public/index.html` in the tree, change the `<h1>`, press `Cmd+S`.
+3. Preview pane reloads automatically (reload counter ticks up).
+4. In the terminal, `ls`, `cat public/index.html`, `echo $WORKSPACE_DIR`, `git init`.
+5. Open a second browser tab on `/ws/<a-different-id>` — confirm it's an independent container.
+6. Run `npx wrangler containers list` (or `make list`) to see live instances.
+
+## Project layout
 
 ```
 .
-├── Dockerfile              # Container image (Go server, linux/amd64)
-├── Makefile                # Build and deploy automation
-├── wrangler.jsonc          # Wrangler config — worker + container bindings
-├── package.json            # Node dependencies (wrangler, hono, @cloudflare/containers)
-├── tsconfig.json           # TypeScript config
-├── worker-configuration.d.ts
+├── Dockerfile                 # Alpine + Go agent
+├── Makefile                   # make install / tidy / dev / deploy
+├── wrangler.jsonc             # Worker config + container binding
+├── package.json
+├── tsconfig.json
 ├── src/
-│   └── index.ts            # Worker entry point — routes requests to containers
+│   ├── index.ts               # Worker entry — routes /ws/:id and proxies API
+│   └── ide.ts                 # The browser IDE HTML (inline Monaco + xterm)
 └── container_src/
     ├── go.mod
-    └── main.go             # Go HTTP server running inside the container
+    ├── main.go                # HTTP server, route wiring
+    ├── files.go               # file tree + read/write
+    ├── terminal.go            # WS pty terminal
+    ├── watcher.go             # fsnotify event stream
+    └── seed/                  # seeded workspace contents
+        ├── README.md
+        └── public/index.html
 ```
-
-## How it works
-
-### Worker (`src/index.ts`)
-
-The Worker extends `Container` from `@cloudflare/containers` to define lifecycle hooks and configuration, then uses Hono to route incoming requests to container instances:
-
-| Route             | Behaviour                                              |
-|-------------------|--------------------------------------------------------|
-| `GET /`           | List available endpoints                               |
-| `GET /container/:id` | Route to a named container (one instance per `:id`) |
-| `GET /lb`         | Load-balance across 3 container instances             |
-| `GET /singleton`  | Route to a single shared container instance           |
-| `GET /error`      | Trigger a container panic (error handling demo)       |
-
-### Container (`container_src/main.go`)
-
-Minimal Go HTTP server that responds with its `MESSAGE` env var and Cloudflare-injected `CLOUDFLARE_DURABLE_OBJECT_ID`. Listens on port `8080`.
-
-### Container config (`wrangler.jsonc`)
-
-```jsonc
-"containers": [{ "class_name": "MyContainer", "image": "./Dockerfile", "max_instances": 10 }]
-```
-
-`wrangler deploy` builds the Docker image, pushes it to Cloudflare's container registry, and deploys the Worker — no separate `docker push` step needed.
 
 ## Deployment
 
-`make deploy` runs `wrangler deploy` which:
-
-1. Builds the Docker image for `linux/amd64`
-2. Pushes the image to Cloudflare's internal registry
-3. Deploys the Worker with the container binding
-
-After deployment, view the worker at:
-`https://vega-containers-poc.<your-subdomain>.workers.dev`
-
-## Useful commands
-
 ```bash
-# Check container instances
-npx wrangler containers list
-
-# Check pushed images
-npx wrangler containers images list
-
-# Tail live logs
-npx wrangler tail vega-containers-poc
-
-# Regenerate TypeScript env types after changing wrangler.jsonc
-npx wrangler types
+make deploy
 ```
+
+That runs `wrangler deploy`, which builds the linux/amd64 image, pushes it to Cloudflare's container registry, and rolls out the Worker with the `Workspace` Durable Object binding.
+
+After deploy, visit `https://vega-ephemeral-dev.<your-subdomain>.workers.dev`.
+
+## Limitations (intentional, for the POC)
+
+- **No persistence.** The workspace resets when the container sleeps. Hook the file API up to R2 or DO storage in v2.
+- **No auth.** Anyone with the URL can use any workspace id. Add Cloudflare Access or a JWT check in the worker before showing this off externally.
+- **One port per container.** The preview is served by the Go agent itself from `/workspace/public`. To proxy a user's own dev server, the agent would need to forward `/preview/*` to `localhost:3000` (or similar) — easy follow-up.
+- **No image install API.** All workspaces start from the same Alpine + Go image. Per-language templates would mean either multiple container classes or a richer base image.
+
+## Pitch
+
+> Personal development environments at the edge.
+>
+> Each developer gets a fresh, sandboxed container, started in milliseconds on Cloudflare's edge, with a browser IDE that ships with the URL. No VPN, no `kubectl`, no laptop setup — open the link and you're coding.
