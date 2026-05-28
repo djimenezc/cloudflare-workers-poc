@@ -99,3 +99,19 @@ Files generated to make the app deployable from scratch:
 | `container_src/main.go` | Go HTTP server running inside the container |
 | `container_src/go.mod` | Go module file |
 | `.gitignore` | Ignores `node_modules`, `.wrangler`, `.env*` |
+
+---
+
+## 7. Pivot to Ephemeral Dev Environment
+
+The POC evolved from a "hello container" demo into a Gitpod-style browser dev environment. Container DO renamed `MyContainer → Workspace` (with a `renamed_classes` migration) and worker renamed `vega-containers-poc → vega-ephemeral-dev`.
+
+| Layer | Change |
+|-------|--------|
+| Dockerfile | `scratch → alpine:3.20`; install `bash`, `git`, `coreutils`, `curl`; seed `/workspace` from `container_src/seed/` |
+| Go agent | Split into `main.go` (HTTP wiring), `files.go` (tree + read/write), `terminal.go` (WS pty via `creack/pty`), `watcher.go` (WS events via `fsnotify`). New deps: `creack/pty`, `fsnotify/fsnotify`, `nhooyr.io/websocket` |
+| Worker | `/ws/:id` serves the IDE HTML; `/ws/:id/*` proxies HTTP and WebSocket to `WORKSPACE.idFromName("workspace-:id")` |
+| Frontend | Single HTML doc inlined from `src/ide.ts`. Monaco + xterm.js loaded via CDN. Three-pane layout: file tree, editor + terminal, preview iframe. `Cmd+S` saves; preview reloads automatically when fsnotify fires for `public/*`. |
+
+Demo URL pattern: `https://vega-ephemeral-dev.<subdomain>.workers.dev/ws/<any-id>`
+

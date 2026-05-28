@@ -1,12 +1,15 @@
-.PHONY: help install dev deploy logs list images clean
+.PHONY: help install dev deploy logs list images clean tidy
 
-WORKER_NAME := vega-containers-poc
+WORKER_NAME := vega-ephemeral-dev
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 install: ## Install npm dependencies
 	npm install
+
+tidy: ## Refresh Go module deps for the workspace agent
+	cd container_src && go mod tidy
 
 dev: ## Run locally with wrangler dev (requires Docker)
 	npx wrangler dev

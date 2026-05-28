@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "vega-containers-poc",
+	"name": "vega-ephemeral-dev",
 	"account_id": "2ea049767293c6cec4d1b9069ab56dd5",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-10-08",
@@ -10,24 +10,22 @@
 	},
 	"containers": [
 		{
-			"class_name": "MyContainer",
+			"class_name": "Workspace",
 			"image": "./Dockerfile",
-			"max_instances": 10
+			"max_instances": 50
 		}
 	],
 	"durable_objects": {
 		"bindings": [
 			{
-				"class_name": "MyContainer",
-				"name": "MY_CONTAINER"
+				"class_name": "Workspace",
+				"name": "WORKSPACE"
 			}
 		]
 	},
 	"migrations": [
-		{
-			"new_sqlite_classes": ["MyContainer"],
-			"tag": "v1"
-		}
+		{ "tag": "v1", "new_sqlite_classes": ["MyContainer"] },
+		{ "tag": "v2-workspace", "renamed_classes": [{ "from": "MyContainer", "to": "Workspace" }] }
 	],
 	"upload_source_maps": true
 }
